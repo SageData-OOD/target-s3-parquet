@@ -28,13 +28,14 @@ _all__ = ["main"]
 LOGGER = singer.get_logger()
 files_to_upload = []
 record_counter = dict()
+file_writer = dict()
 
 
 def create_dataframe(list_dict):
     fields = set()
     for d in list_dict:
         fields = fields.union(d.keys())
-    dataframe = pa.table({f: [row.get(f) for row in list_dict] for f in fields})
+    dataframe = pa.table({f: [row.get(f) for row in list_dict] for f in sorted(fields)})
     return dataframe
 
 
@@ -91,6 +92,7 @@ def persist_messages(
     key_properties = {}
     validators = {}
     now = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
 
     compression_extension = ""
     if compression_method:
@@ -167,7 +169,6 @@ def persist_messages(
             raise Err
 
     def write_file(current_stream_name, record):
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
         LOGGER.debug(f"Writing files from {current_stream_name} stream")
         dataframe = create_dataframe(record)
         if streams_in_separate_folder and not os.path.exists(
@@ -192,10 +193,11 @@ def persist_messages(
         if not (filepath, target_key) in files_to_upload:
             files_to_upload.append((filepath, target_key))
 
-        with open(filepath, 'wb') as f:
-            ParquetWriter(f,
-                          dataframe.schema,
-                          compression=compression_method).write_table(dataframe)
+        if not file_writer.get(current_stream_name):
+            file_writer[current_stream_name] = ParquetWriter(filepath,
+                                                             dataframe.schema,
+                                                             compression=compression_method)
+        file_writer[current_stream_name].write_table(dataframe)
 
         if current_stream_name not in record_counter:
             record_counter[current_stream_name] = 0
@@ -206,6 +208,8 @@ def persist_messages(
         return filepath
 
     def upload_files_to_s3():
+        LOGGER.info(f"Writing {len(files_to_upload)} files")
+
         for filename, target_key in files_to_upload:
             s3.upload_file(filename,
                            s3_client,
@@ -263,9 +267,14 @@ def persist_messages(
                         records.pop(current_stream_name)
                     )
                 )
-                LOGGER.info(f"Wrote {len(files_created)} files")
-                LOGGER.debug(f"Wrote {files_created} files")
+
+                # Upload files to S3
                 upload_files_to_s3()
+
+                # Close open stream files
+                for file in file_writer.values():
+                    file.close()
+
                 break
 
     q = Queue()

@@ -13,7 +13,7 @@ setup(
     install_requires=[
         "jsonschema==2.6.0",
         "singer-python==5.12.1",
-        "pyarrow==4.0.1",
+        "pyarrow==8.0.0",
         "psutil==5.8",
         "boto3==1.23.7"
     ],
