@@ -92,3 +92,4 @@ ENV/
 
 # VS Code project settings
 .vscode/
+.idea

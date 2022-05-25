@@ -15,12 +15,12 @@ setup(
         "singer-python==5.12.1",
         "pyarrow==4.0.1",
         "psutil==5.8",
+        "boto3==1.23.7"
     ],
     extras_require={
         'dev': [
             'pytest==6.2.4',
-            'pandas==1.2.4'
-        ]
+            'pandas==1.2.4']
     },
     entry_points="""
           [console_scripts]

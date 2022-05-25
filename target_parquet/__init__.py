@@ -8,7 +8,6 @@ from jsonschema.validators import Draft4Validator
 import os
 import pkg_resources
 import pyarrow as pa
-from pyarrow import compute
 from pyarrow.parquet import ParquetWriter
 import singer
 import sys
@@ -21,11 +20,15 @@ from enum import Enum
 from multiprocessing import Process, Queue
 
 from .helpers import flatten, flatten_schema
+from .target_parquet import s3
+from .target_parquet import utils
 
 _all__ = ["main"]
 
 LOGGER = singer.get_logger()
-LOGGER.setLevel(os.getenv("LOGGER_LEVEL", "INFO"))
+files_to_upload = []
+record_counter = dict()
+
 
 def create_dataframe(list_dict):
     fields = set()
@@ -37,9 +40,10 @@ def create_dataframe(list_dict):
 
 class MessageType(Enum):
     RECORD = 1
-    STATE  = 2
+    STATE = 2
     SCHEMA = 3
-    EOF    = 4
+    EOF = 4
+
 
 def emit_state(state):
     if state is not None:
@@ -66,21 +70,33 @@ class MemoryReporter(threading.Thread):
             time.sleep(30.0)
 
 
+def print_metric(record_counter, stream_name, target_key):
+    metric = {"type": "counter", "metric": "record_count", "value": record_counter.get(stream_name),
+              "tags": {"count_type": "table_rows_persisted", "table": target_key}}
+    LOGGER.info('\nINFO METRIC: %s', json.dumps(metric))
+
+
 def persist_messages(
-    messages,
-    destination_path,
-    compression_method=None,
-    streams_in_separate_folder=False,
-    file_size=-1,
+        messages,
+        config,
+        s3_client,
+        file_size=-1
 ):
-    ## Static information shared among processes
+    destination_path = config.get("destination_path", ".")
+    compression_method = config.get("compression_method")
+    streams_in_separate_folder = config.get("streams_in_separate_folder", False)
+
+    # Static information shared among processes
     schemas = {}
     key_properties = {}
     validators = {}
+    now = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
 
     compression_extension = ""
     if compression_method:
-        # The target is prepared to accept all the compression methods provided by the pandas module, with the mapping below,
+        # The target is prepared to accept all the compression methods provided by the pandas module,
+        # with the mapping below,
         extension_mapping = {
             "SNAPPY": ".snappy",
             "GZIP": ".gz",
@@ -99,7 +115,7 @@ def persist_messages(
         filename_separator = os.path.sep
     if not os.path.exists(destination_path):
         os.makedirs(destination_path)
-    ## End of Static information shared among processes
+    # End of Static information shared among processes
 
     # Object that signals shutdown
     _break_object = object()
@@ -125,7 +141,8 @@ def persist_messages(
                     stream_name = message["stream"]
                     validators[message["stream"]].validate(message["record"])
                     flattened_record = flatten(message["record"])
-                    # Once the record is flattenned, it is added to the final record list, which will be stored in the parquet file.
+                    # Once the record is flattened, it is added to the final record list, which will be stored in
+                    # the parquet file.
                     w_queue.put((MessageType.RECORD, stream_name, flattened_record))
                     state = None
                 elif message_type == "STATE":
@@ -151,33 +168,63 @@ def persist_messages(
             raise Err
 
     def write_file(current_stream_name, record):
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
         LOGGER.debug(f"Writing files from {current_stream_name} stream")
         dataframe = create_dataframe(record)
         if streams_in_separate_folder and not os.path.exists(
-            os.path.join(destination_path, current_stream_name)
+                os.path.join(destination_path, current_stream_name)
         ):
             os.makedirs(os.path.join(destination_path, current_stream_name))
         filename = (
-            current_stream_name
-            + filename_separator
-            + timestamp
-            + compression_extension
-            + ".parquet"
+                current_stream_name
+                + filename_separator
+                + timestamp
+                + compression_extension
+                + ".parquet"
         )
         filepath = os.path.expanduser(os.path.join(destination_path, filename))
+
+        # Create target s3 key
+        target_key = utils.get_target_key(current_stream_name,
+                                          prefix=config.get('s3_key_prefix', ''),
+                                          timestamp=now,
+                                          compression=compression_extension,
+                                          naming_convention=config.get('naming_convention'))
+        if not (filepath, target_key) in files_to_upload:
+            files_to_upload.append((filepath, target_key))
+
         with open(filepath, 'wb') as f:
             ParquetWriter(f,
-                        dataframe.schema,
-                        compression=compression_method).write_table(dataframe)
-        ## explicit memory management. This can be usefull when working on very large data groups
+                          dataframe.schema,
+                          compression=compression_method).write_table(dataframe)
+
+        if current_stream_name not in record_counter:
+            record_counter[current_stream_name] = 0
+        record_counter[current_stream_name] += len(record)
+
+        # explicit memory management. This can be useful when working on very large data groups
         del dataframe
         return filepath
+
+    def upload_files_to_s3():
+        for filename, target_key in files_to_upload:
+            s3.upload_file(filename,
+                           s3_client,
+                           config.get('s3_bucket'),
+                           target_key,
+                           encryption_type=config.get('encryption_type'),
+                           encryption_key=config.get('encryption_key'))
+
+            # Remove the local file(s)
+            os.remove(filename)
+
+            # Print record_count metrics
+            print_metric(record_counter, filename.split("/")[-1].split("-")[0], target_key)
 
     def consumer(receiver):
         files_created = []
         current_stream_name = None
-        # records is a list of dictionary of lists of dictionaries that will contain the records that are retrieved from the tap
+        # records is a list of dictionary of lists of dictionaries that will contain the records that are retrieved
+        # from the tap
         records = {}
         schemas = {}
 
@@ -191,7 +238,7 @@ def persist_messages(
                             records.pop(current_stream_name)
                         )
                     )
-                    ## explicit memory management. This can be usefull when working on very large data groups
+                    # explicit memory management. This can be usefull when working on very large data groups
                     gc.collect()
                 current_stream_name = stream_name
                 if type(records.get(stream_name)) != list:
@@ -199,7 +246,7 @@ def persist_messages(
                 else:
                     records[stream_name].append(record)
                     if (file_size > 0) and \
-                    (not len(records[stream_name]) % file_size):
+                            (not len(records[stream_name]) % file_size):
                         files_created.append(
                             write_file(
                                 current_stream_name,
@@ -218,6 +265,7 @@ def persist_messages(
                 )
                 LOGGER.info(f"Wrote {len(files_created)} files")
                 LOGGER.debug(f"Wrote {files_created} files")
+                upload_files_to_s3()
                 break
 
     q = Queue()
@@ -246,7 +294,7 @@ def send_usage_stats():
         conn.request("GET", "/i?" + urllib.parse.urlencode(params))
         conn.getresponse()
         conn.close()
-    except:
+    except Exception:
         LOGGER.debug("Collection request failed")
 
 
@@ -274,11 +322,12 @@ def main():
     input_messages = TextIOWrapper(sys.stdin.buffer, encoding="utf-8")
     if LOGGER.level == 0:
         MemoryReporter().start()
+
+    s3_client = s3.create_client(config)
     state = persist_messages(
         input_messages,
-        config.get("destination_path", "."),
-        config.get("compression_method", None),
-        config.get("streams_in_separate_folder", False),
+        config,
+        s3_client,
         int(config.get("file_size", -1))
     )
 
