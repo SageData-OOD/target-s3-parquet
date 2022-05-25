@@ -84,7 +84,7 @@ def persist_messages(
 ):
     destination_path = "/tmp/"
     compression_method = config.get("compression_method")
-    streams_in_separate_folder = config.get("streams_in_separate_folder", False)
+    streams_in_separate_folder = False
 
     # Static information shared among processes
     schemas = {}
