@@ -82,7 +82,7 @@ def persist_messages(
         s3_client,
         file_size=-1
 ):
-    destination_path = config.get("destination_path", ".")
+    destination_path = "/tmp/"
     compression_method = config.get("compression_method")
     streams_in_separate_folder = config.get("streams_in_separate_folder", False)
 
@@ -91,7 +91,6 @@ def persist_messages(
     key_properties = {}
     validators = {}
     now = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
 
     compression_extension = ""
     if compression_method:
@@ -168,6 +167,7 @@ def persist_messages(
             raise Err
 
     def write_file(current_stream_name, record):
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
         LOGGER.debug(f"Writing files from {current_stream_name} stream")
         dataframe = create_dataframe(record)
         if streams_in_separate_folder and not os.path.exists(
