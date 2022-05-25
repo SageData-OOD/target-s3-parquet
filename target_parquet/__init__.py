@@ -20,8 +20,8 @@ from enum import Enum
 from multiprocessing import Process, Queue
 
 from .helpers import flatten, flatten_schema
-from .target_parquet import s3
-from .target_parquet import utils
+from target_parquet import s3
+from target_parquet import utils
 
 _all__ = ["main"]
 
