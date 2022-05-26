@@ -85,6 +85,7 @@ def persist_messages(
 ):
     destination_path = "/tmp/"
     compression_method = config.get("compression_method")
+    compression_type = config.get("compression_type", "outer")
     streams_in_separate_folder = False
 
     # Static information shared among processes
@@ -94,22 +95,13 @@ def persist_messages(
     now = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
 
-    compression_extension = ""
-    if compression_method:
-        # The target is prepared to accept all the compression methods provided by the pandas module,
-        # with the mapping below,
-        extension_mapping = {
-            "SNAPPY": ".snappy",
-            "GZIP": ".gz",
-            "BROTLI": ".br",
-            "ZSTD": ".zstd",
-            "LZ4": ".lz4",
-        }
-        compression_extension = extension_mapping.get(compression_method.upper())
-        if compression_extension is None:
-            LOGGER.warning("unsuported compression method.")
-            compression_extension = ""
-            compression_method = None
+    # The target is prepared to accept all the compression methods provided by the Pandas module,
+    # with the mapping below,
+    compression_method, compression_extension = utils.get_extension_mapping(compression_method)
+
+    inner_extension = compression_extension if compression_type == "inner" else ""  # file.gz.parquet
+    outer_extension = compression_extension if compression_type == "outer" else ""  # file.parquet.gz
+
     filename_separator = "-"
     if streams_in_separate_folder:
         LOGGER.info("writing streams in separate folders")
@@ -179,7 +171,7 @@ def persist_messages(
                 current_stream_name
                 + filename_separator
                 + timestamp
-                + compression_extension
+                + inner_extension
                 + ".parquet"
         )
         filepath = os.path.expanduser(os.path.join(destination_path, filename))
@@ -188,7 +180,8 @@ def persist_messages(
         target_key = utils.get_target_key(current_stream_name,
                                           prefix=config.get('s3_key_prefix', ''),
                                           timestamp=now,
-                                          compression=compression_extension,
+                                          compression_type=compression_type,
+                                          compression_extension=compression_extension,
                                           naming_convention=config.get('naming_convention'))
         if not (filepath, target_key) in files_to_upload:
             files_to_upload.append((filepath, target_key))
@@ -196,7 +189,8 @@ def persist_messages(
         if not file_writer.get(current_stream_name):
             file_writer[current_stream_name] = ParquetWriter(filepath,
                                                              dataframe.schema,
-                                                             compression=compression_method)
+                                                             compression=compression_method
+                                                             if compression_type == "inner" else None)
         file_writer[current_stream_name].write_table(dataframe)
 
         if current_stream_name not in record_counter:
@@ -209,9 +203,12 @@ def persist_messages(
 
     def upload_files_to_s3():
         LOGGER.info(f"Writing {len(files_to_upload)} files")
-
+        compressed_file = None
         for filename, target_key in files_to_upload:
-            s3.upload_file(filename,
+            if compression_method and outer_extension:
+                compressed_file = utils.do_outer_compression(filename, compression_method)
+
+            s3.upload_file(compressed_file or filename,
                            s3_client,
                            config.get('s3_bucket'),
                            target_key,
@@ -268,12 +265,12 @@ def persist_messages(
                     )
                 )
 
-                # Upload files to S3
-                upload_files_to_s3()
-
                 # Close open stream files
                 for file in file_writer.values():
                     file.close()
+
+                # Upload files to S3
+                upload_files_to_s3()
 
                 break
 

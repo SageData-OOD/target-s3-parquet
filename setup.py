@@ -15,7 +15,8 @@ setup(
         "singer-python==5.12.1",
         "pyarrow==8.0.0",
         "psutil==5.8",
-        "boto3==1.23.7"
+        "boto3==1.23.7",
+        "python-snappy==0.6.1"
     ],
     extras_require={
         'dev': [
