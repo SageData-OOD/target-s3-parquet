@@ -1,7 +1,7 @@
 import pytest
 import logging
 
-from target_parquet.helpers import flatten, flatten_schema
+from target_s3_parquet.helpers import flatten, flatten_schema
 
 
 def test_flatten():

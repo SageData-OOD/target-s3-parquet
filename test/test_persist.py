@@ -11,7 +11,7 @@ import logging
 # from os import walk
 import glob
 import os
-from target_parquet import persist_messages
+from target_s3_parquet import persist_messages
 
 #### TEMP DEBUG
 

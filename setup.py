@@ -3,7 +3,7 @@
 from setuptools import setup
 
 setup(
-    name="target-parquet",
+    name="target-s3-parquet",
     version="0.2.2",
     description="Singer.io target for writing into parquet files",
     author="Rafael 'Auyer' Passos",
@@ -25,7 +25,7 @@ setup(
     },
     entry_points="""
           [console_scripts]
-          target-parquet=target_parquet:main
+          target-s3-parquet=target_s3_parquet:main
       """,
-    packages=["target_parquet"],
+    packages=["target_s3_parquet"],
 )
