@@ -21,7 +21,7 @@ def do_outer_compression(filename, compression_method):
     elif compression_method == "snappy":
         compressed_file = f"{filename}.snappy"
         with open(filename, 'rb') as f_in:
-            with open(compressed_file, 'w') as f_out:
+            with open(compressed_file, 'wb') as f_out:
                 snappy.stream_compress(f_in, f_out)
     else:
         raise NotImplementedError(
