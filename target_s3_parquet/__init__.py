@@ -14,6 +14,7 @@ import sys
 import urllib
 import psutil
 import time
+import logging
 import threading
 import gc
 from enum import Enum
@@ -26,6 +27,8 @@ from target_s3_parquet import utils
 _all__ = ["main"]
 
 LOGGER = singer.get_logger()
+# LOGGER.setLevel(logging.DEBUG)
+
 files_to_upload = []
 record_counter = dict()
 file_writer = dict()
@@ -132,8 +135,9 @@ def persist_messages(
                             )
                         )
                     stream_name = message["stream"]
-                    validators[message["stream"]].validate(message["record"])
-                    flattened_record = flatten(message["record"])
+                    record = message.get("record")
+                    validators[message["stream"]].validate(record)
+                    flattened_record = flatten(record)
                     # Once the record is flattened, it is added to the final record list, which will be stored in
                     # the parquet file.
                     w_queue.put((MessageType.RECORD, stream_name, flattened_record))
@@ -144,12 +148,15 @@ def persist_messages(
                 elif message_type == "SCHEMA":
                     stream = message["stream"]
                     validators[stream] = Draft4Validator(message["schema"])
-                    schemas[stream] = flatten_schema(message["schema"]["properties"])
+
+                    properties = message["schema"]["properties"]
+                    # LOGGER.info("*******SCHEMA: %s", message["schema"])
+                    schemas[stream] = flatten_schema(properties)
                     LOGGER.debug(f"Schema: {schemas[stream]}")
                     key_properties[stream] = message["key_properties"]
                     w_queue.put((MessageType.SCHEMA, stream, schemas[stream]))
                 else:
-                    LOGGER.warning(
+                    LOGGER.debug(
                         "Unknown message type {} in message {}".format(
                             message["type"], message
                         )
@@ -183,8 +190,8 @@ def persist_messages(
                                           compression_type=compression_type,
                                           compression_extension=compression_extension,
                                           naming_convention=config.get('naming_convention'))
-        if not (filepath, target_key) in files_to_upload:
-            files_to_upload.append((filepath, target_key))
+        if not (filepath, target_key, current_stream_name) in files_to_upload:
+            files_to_upload.append((filepath, target_key, current_stream_name))
 
         if not file_writer.get(current_stream_name):
             file_writer[current_stream_name] = ParquetWriter(filepath,
@@ -204,7 +211,7 @@ def persist_messages(
     def upload_files_to_s3():
         LOGGER.info(f"Writing {len(files_to_upload)} files")
         compressed_file = None
-        for filename, target_key in files_to_upload:
+        for filename, target_key, stream_name in files_to_upload:
             if compression_method and outer_extension:
                 compressed_file = utils.do_outer_compression(filename, compression_method)
 
@@ -218,8 +225,10 @@ def persist_messages(
             # Remove the local file(s)
             os.remove(filename)
 
+            # LOGGER.info("FILENAME: %s", filename)
+
             # Print record_count metrics
-            print_metric(record_counter, filename.split("/")[-1].split("-")[0], target_key)
+            print_metric(record_counter, stream_name, target_key)
 
     def consumer(receiver):
         files_created = []
@@ -258,12 +267,13 @@ def persist_messages(
             elif message_type == MessageType.SCHEMA:
                 schemas[stream_name] = record
             elif message_type == MessageType.EOF:
-                files_created.append(
-                    write_file(
-                        current_stream_name,
-                        records.pop(current_stream_name)
+                if current_stream_name:
+                    files_created.append(
+                        write_file(
+                            current_stream_name,
+                            records.pop(current_stream_name)
+                        )
                     )
-                )
 
                 # Close open stream files
                 for file in file_writer.values():
