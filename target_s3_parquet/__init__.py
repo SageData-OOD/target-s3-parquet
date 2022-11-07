@@ -74,9 +74,9 @@ class MemoryReporter(threading.Thread):
             time.sleep(30.0)
 
 
-def print_metric(record_counter, stream_name, target_key):
+def print_metric(record_counter, stream_name):
     metric = {"type": "counter", "metric": "record_count", "value": record_counter.get(stream_name),
-              "tags": {"count_type": "table_rows_persisted", "table": target_key}}
+              "tags": {"count_type": "table_rows_persisted", "table": stream_name}}
     LOGGER.info('\nINFO METRIC: %s', json.dumps(metric))
 
 
@@ -228,7 +228,7 @@ def persist_messages(
             # LOGGER.info("FILENAME: %s", filename)
 
             # Print record_count metrics
-            print_metric(record_counter, stream_name, target_key)
+            print_metric(record_counter, stream_name)
 
     def consumer(receiver):
         files_created = []
