@@ -292,6 +292,10 @@ def persist_messages(
     t2.start()
     state = producer(messages, q)
     t2.join()
+
+    if t2.exitcode != 0:
+        raise Exception("Process terminated abnormaly")
+
     return state
 
 
