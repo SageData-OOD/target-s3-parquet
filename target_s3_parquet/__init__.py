@@ -74,7 +74,7 @@ class MemoryReporter(threading.Thread):
             time.sleep(30.0)
 
 
-def print_metric(record_counter, stream_name):
+def emit_records_counter_metrics(record_counter, stream_name):
     metric = {"type": "counter", "metric": "record_count", "value": record_counter.get(stream_name),
               "tags": {"count_type": "table_rows_persisted", "table": stream_name}}
     LOGGER.info('\nINFO METRIC: %s', json.dumps(metric))
@@ -227,8 +227,8 @@ def persist_messages(
 
             # LOGGER.info("FILENAME: %s", filename)
 
-            # Print record_count metrics
-            print_metric(record_counter, stream_name)
+            # Emit record_count metrics
+            emit_records_counter_metrics(record_counter, stream_name)
 
     def consumer(receiver):
         files_created = []
@@ -348,7 +348,8 @@ def main():
         input_messages,
         config,
         s3_client,
-        int(config.get("file_size", -1))
+        # batch every 20k records
+        int(config.get("file_size", 20000))
     )
 
     emit_state(state)
