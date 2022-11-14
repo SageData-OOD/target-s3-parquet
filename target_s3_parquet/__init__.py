@@ -14,9 +14,9 @@ import sys
 import urllib
 import psutil
 import time
-import logging
-import threading
 import gc
+import threading
+# import gc
 from enum import Enum
 from multiprocessing import Process, Queue
 
@@ -29,10 +29,8 @@ _all__ = ["main"]
 LOGGER = singer.get_logger()
 # LOGGER.setLevel(logging.DEBUG)
 
-files_to_upload = []
+files_to_upload = set()
 record_counter = dict()
-file_writer = dict()
-
 
 def create_dataframe(list_dict):
     fields = set()
@@ -66,7 +64,7 @@ class MemoryReporter(threading.Thread):
 
     def run(self):
         while True:
-            LOGGER.debug(
+            LOGGER.info(
                 "Virtual memory usage: %.2f%% of total: %s",
                 self.process.memory_percent(),
                 self.process.memory_info(),
@@ -150,9 +148,8 @@ def persist_messages(
                     validators[stream] = Draft4Validator(message["schema"])
 
                     properties = message["schema"]["properties"]
-                    # LOGGER.info("*******SCHEMA: %s", message["schema"])
                     schemas[stream] = flatten_schema(properties)
-                    LOGGER.debug(f"Schema: {schemas[stream]}")
+                    LOGGER.info(f"Schema: {schemas[stream]}")
                     key_properties[stream] = message["key_properties"]
                     w_queue.put((MessageType.SCHEMA, stream, schemas[stream]))
                 else:
@@ -168,7 +165,8 @@ def persist_messages(
             raise Err
 
     def write_file(current_stream_name, record):
-        LOGGER.debug(f"Writing files from {current_stream_name} stream")
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
+        LOGGER.info(f"Writing files from {current_stream_name} stream")
         dataframe = create_dataframe(record)
         if streams_in_separate_folder and not os.path.exists(
                 os.path.join(destination_path, current_stream_name)
@@ -183,22 +181,32 @@ def persist_messages(
         )
         filepath = os.path.expanduser(os.path.join(destination_path, filename))
 
+        LOGGER.info("Filepath: %s", filepath)
+
         # Create target s3 key
         target_key = utils.get_target_key(current_stream_name,
                                           prefix=config.get('s3_key_prefix', ''),
-                                          timestamp=now,
+                                          timestamp=timestamp,
                                           compression_type=compression_type,
                                           compression_extension=compression_extension,
                                           naming_convention=config.get('naming_convention'))
-        if not (filepath, target_key, current_stream_name) in files_to_upload:
-            files_to_upload.append((filepath, target_key, current_stream_name))
 
-        if not file_writer.get(current_stream_name):
-            file_writer[current_stream_name] = ParquetWriter(filepath,
-                                                             dataframe.schema,
-                                                             compression=compression_method
-                                                             if compression_type == "inner" else None)
-        file_writer[current_stream_name].write_table(dataframe)
+        files_to_upload.add((filepath, target_key, current_stream_name))
+
+        # if not file_writer.get(current_stream_name):
+        #     file_writer[current_stream_name] = ParquetWriter(filepath,
+        #                                                      dataframe.schema,
+        #                                                      compression=compression_method
+        #                                                      if compression_type == "inner" else None
+        #                                                      )
+        # file_writer[current_stream_name].write_batch(dataframe)
+
+        with ParquetWriter(filepath,
+                    dataframe.schema,
+                    compression=compression_method
+                    if compression_type == "inner" else None
+                    ) as fw:
+            fw.write_table(dataframe)
 
         if current_stream_name not in record_counter:
             record_counter[current_stream_name] = 0
@@ -225,13 +233,11 @@ def persist_messages(
             # Remove the local file(s)
             os.remove(filename)
 
-            # LOGGER.info("FILENAME: %s", filename)
-
-            # Emit record_count metrics
+        # Emit record_count metrics
+        for stream_name in record_counter:
             emit_records_counter_metrics(record_counter, stream_name)
 
     def consumer(receiver):
-        files_created = []
         current_stream_name = None
         # records is a list of dictionary of lists of dictionaries that will contain the records that are retrieved
         # from the tap
@@ -242,11 +248,9 @@ def persist_messages(
             (message_type, stream_name, record) = receiver.get()  # q.get()
             if message_type == MessageType.RECORD:
                 if (stream_name != current_stream_name) and (current_stream_name != None):
-                    files_created.append(
-                        write_file(
-                            current_stream_name,
-                            records.pop(current_stream_name)
-                        )
+                    write_file(
+                        current_stream_name,
+                        records.pop(current_stream_name)
                     )
                     # explicit memory management. This can be usefull when working on very large data groups
                     gc.collect()
@@ -257,27 +261,23 @@ def persist_messages(
                     records[stream_name].append(record)
                     if (file_size > 0) and \
                             (not len(records[stream_name]) % file_size):
-                        files_created.append(
-                            write_file(
-                                current_stream_name,
-                                records.pop(current_stream_name)
-                            )
+                        write_file(
+                            current_stream_name,
+                            records.pop(current_stream_name)
                         )
                         gc.collect()
             elif message_type == MessageType.SCHEMA:
                 schemas[stream_name] = record
             elif message_type == MessageType.EOF:
                 if current_stream_name:
-                    files_created.append(
-                        write_file(
-                            current_stream_name,
-                            records.pop(current_stream_name)
-                        )
+                    write_file(
+                        current_stream_name,
+                        records.pop(current_stream_name)
                     )
 
-                # Close open stream files
-                for file in file_writer.values():
-                    file.close()
+                # # Close open stream files
+                # for file in file_writer.values():
+                #     file.close()
 
                 # Upload files to S3
                 upload_files_to_s3()
