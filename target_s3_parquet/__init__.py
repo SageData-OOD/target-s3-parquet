@@ -2,23 +2,18 @@
 import argparse
 from datetime import datetime
 from io import TextIOWrapper
-import http.client
 import simplejson as json
 from jsonschema.validators import Draft4Validator
 import os
-import pkg_resources
 import pyarrow as pa
 from pyarrow.parquet import ParquetWriter
 import singer
 import sys
-import urllib
 import psutil
 import time
-import gc
 import threading
 # import gc
 from enum import Enum
-from multiprocessing import Process, Queue
 
 from .helpers import flatten, flatten_schema
 from target_s3_parquet import s3
@@ -29,23 +24,12 @@ _all__ = ["main"]
 LOGGER = singer.get_logger()
 # LOGGER.setLevel(logging.DEBUG)
 
-files_to_upload = set()
-record_counter = dict()
-
 def create_dataframe(list_dict):
     fields = set()
     for d in list_dict:
         fields = fields.union(d.keys())
     dataframe = pa.table({f: [row.get(f) for row in list_dict] for f in sorted(fields)})
     return dataframe
-
-
-class MessageType(Enum):
-    RECORD = 1
-    STATE = 2
-    SCHEMA = 3
-    EOF = 4
-
 
 def emit_state(state):
     if state is not None:
@@ -91,8 +75,12 @@ def persist_messages(
 
     # Static information shared among processes
     schemas = {}
-    key_properties = {}
     validators = {}
+    files_to_upload = set()
+    record_counter = dict()
+
+    # TODO: add metadata columns?
+    key_properties = {}
     now = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
 
@@ -111,58 +99,83 @@ def persist_messages(
         os.makedirs(destination_path)
     # End of Static information shared among processes
 
-    # Object that signals shutdown
-    _break_object = object()
-
-    def producer(message_buffer: TextIOWrapper, w_queue: Queue):
+    def process_messages(message_buffer: TextIOWrapper):
         state = None
-        try:
-            for message in message_buffer:
-                LOGGER.debug(f"target-parquet got message: {message}")
-                try:
-                    message = singer.parse_message(message).asdict()
-                except json.decoder.JSONDecodeError:
-                    raise Exception("Unable to parse:\n{}".format(message))
+        current_stream_name = None
+        records = {}
 
-                message_type = message["type"]
-                if message_type == "RECORD":
-                    if message["stream"] not in schemas:
-                        raise ValueError(
-                            "A record for stream {} was encountered before a corresponding schema".format(
-                                message["stream"]
-                            )
-                        )
-                    stream_name = message["stream"]
-                    record = message.get("record")
-                    validators[message["stream"]].validate(record)
-                    flattened_record = flatten(record)
-                    # Once the record is flattened, it is added to the final record list, which will be stored in
-                    # the parquet file.
-                    w_queue.put((MessageType.RECORD, stream_name, flattened_record))
-                    state = None
-                elif message_type == "STATE":
-                    LOGGER.debug("Setting state to {}".format(message["value"]))
-                    state = message["value"]
-                elif message_type == "SCHEMA":
-                    stream = message["stream"]
-                    validators[stream] = Draft4Validator(message["schema"])
+        for message in message_buffer:
+            LOGGER.debug(f"target-parquet got message: {message}")
+            try:
+                message = singer.parse_message(message).asdict()
+            except json.decoder.JSONDecodeError:
+                raise Exception("Unable to parse:\n{}".format(message))
 
-                    properties = message["schema"]["properties"]
-                    schemas[stream] = flatten_schema(properties)
-                    LOGGER.info(f"Schema: {schemas[stream]}")
-                    key_properties[stream] = message["key_properties"]
-                    w_queue.put((MessageType.SCHEMA, stream, schemas[stream]))
-                else:
-                    LOGGER.debug(
-                        "Unknown message type {} in message {}".format(
-                            message["type"], message
+            message_type = message["type"]
+            if message_type == "RECORD":
+                if message["stream"] not in schemas:
+                    raise ValueError(
+                        "A record for stream {} was encountered before a corresponding schema".format(
+                            message["stream"]
                         )
                     )
-            w_queue.put((MessageType.EOF, _break_object, None))
-            return state
-        except Exception as Err:
-            w_queue.put((MessageType.EOF, _break_object, None))
-            raise Err
+                stream_name = message["stream"]
+                record = message.get("record")
+                validators[message["stream"]].validate(record)
+                flattened_record = flatten(record)
+                # Once the record is flattened, it is added to the final record list, which will be stored in
+                # the parquet file.
+                if (stream_name != current_stream_name) and (current_stream_name != None):
+                    write_file(
+                        current_stream_name,
+                        records.pop(current_stream_name)
+                    )
+                    upload_files_to_s3()
+                current_stream_name = stream_name
+                if type(records.get(stream_name)) != list:
+                    records[stream_name] = [flattened_record]
+                else:
+                    records[stream_name].append(flattened_record)
+                    if (file_size > 0) and \
+                            (not len(records[stream_name]) % file_size):
+                        write_file(
+                            current_stream_name,
+                            records.pop(current_stream_name)
+                        )
+                        upload_files_to_s3()
+                state = None
+            elif message_type == "STATE":
+                LOGGER.debug("Setting state to {}".format(message["value"]))
+                state = message["value"]
+            elif message_type == "SCHEMA":
+                stream = message["stream"]
+                validators[stream] = Draft4Validator(message["schema"])
+
+                properties = message["schema"]["properties"]
+                schemas[stream] = flatten_schema(properties)
+                LOGGER.info(f"Schema: {schemas[stream]}")
+                # key_properties[stream] = message["key_properties"]
+            else:
+                LOGGER.debug(
+                    "Unknown message type {} in message {}".format(
+                        message["type"], message
+                    )
+                )
+
+        if current_stream_name:
+            write_file(
+                current_stream_name,
+                records.pop(current_stream_name)
+            )
+
+        LOGGER.info("Upload files to S3...")
+        
+        upload_files_to_s3()
+        # Emit record_count metrics
+        for stream_name in record_counter:
+            emit_records_counter_metrics(record_counter, stream_name)
+
+        return state
 
     def write_file(current_stream_name, record):
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
@@ -181,7 +194,7 @@ def persist_messages(
         )
         filepath = os.path.expanduser(os.path.join(destination_path, filename))
 
-        LOGGER.info("Filepath: %s", filepath)
+        LOGGER.info("Filepath: %s, Records: %d", filepath, len(record))
 
         # Create target s3 key
         target_key = utils.get_target_key(current_stream_name,
@@ -191,6 +204,7 @@ def persist_messages(
                                           compression_extension=compression_extension,
                                           naming_convention=config.get('naming_convention'))
 
+        #keep current_stream_name
         files_to_upload.add((filepath, target_key, current_stream_name))
 
         # if not file_writer.get(current_stream_name):
@@ -233,90 +247,9 @@ def persist_messages(
             # Remove the local file(s)
             os.remove(filename)
 
-        # Emit record_count metrics
-        for stream_name in record_counter:
-            emit_records_counter_metrics(record_counter, stream_name)
+        files_to_upload.clear()
 
-    def consumer(receiver):
-        current_stream_name = None
-        # records is a list of dictionary of lists of dictionaries that will contain the records that are retrieved
-        # from the tap
-        records = {}
-        schemas = {}
-
-        while True:
-            (message_type, stream_name, record) = receiver.get()  # q.get()
-            if message_type == MessageType.RECORD:
-                if (stream_name != current_stream_name) and (current_stream_name != None):
-                    write_file(
-                        current_stream_name,
-                        records.pop(current_stream_name)
-                    )
-                    # explicit memory management. This can be usefull when working on very large data groups
-                    gc.collect()
-                current_stream_name = stream_name
-                if type(records.get(stream_name)) != list:
-                    records[stream_name] = [record]
-                else:
-                    records[stream_name].append(record)
-                    if (file_size > 0) and \
-                            (not len(records[stream_name]) % file_size):
-                        write_file(
-                            current_stream_name,
-                            records.pop(current_stream_name)
-                        )
-                        gc.collect()
-            elif message_type == MessageType.SCHEMA:
-                schemas[stream_name] = record
-            elif message_type == MessageType.EOF:
-                if current_stream_name:
-                    write_file(
-                        current_stream_name,
-                        records.pop(current_stream_name)
-                    )
-
-                # # Close open stream files
-                # for file in file_writer.values():
-                #     file.close()
-
-                # Upload files to S3
-                upload_files_to_s3()
-
-                break
-
-    q = Queue()
-    t2 = Process(
-        target=consumer,
-        args=(q,),
-    )
-    t2.start()
-    state = producer(messages, q)
-    t2.join()
-
-    if t2.exitcode != 0:
-        raise Exception("Process terminated abnormaly")
-
-    return state
-
-
-def send_usage_stats():
-    try:
-        version = pkg_resources.get_distribution("target-parquet").version
-        conn = http.client.HTTPConnection("collector.singer.io", timeout=10)
-        conn.connect()
-        params = {
-            "e": "se",
-            "aid": "singer",
-            "se_ca": "target-parquet",
-            "se_ac": "open",
-            "se_la": version,
-        }
-        conn.request("GET", "/i?" + urllib.parse.urlencode(params))
-        conn.getresponse()
-        conn.close()
-    except Exception:
-        LOGGER.debug("Collection request failed")
-
+    return process_messages(messages)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -331,17 +264,11 @@ def main():
         level = config.get("logging_level", None)
         if level:
             LOGGER.setLevel(level)
-    if not config.get("disable_collection", False):
-        LOGGER.info(
-            "Sending version information to singer.io. "
-            + "To disable sending anonymous usage data, set "
-            + 'the config parameter "disable_collection" to true'
-        )
-        threading.Thread(target=send_usage_stats).start()
     # The target expects that the tap generates UTF-8 encoded text.
     input_messages = TextIOWrapper(sys.stdin.buffer, encoding="utf-8")
-    if LOGGER.level == 0:
-        MemoryReporter().start()
+
+    # if LOGGER.level == 0:
+    #     MemoryReporter().start()
 
     s3_client = s3.create_client(config)
     state = persist_messages(
@@ -349,7 +276,7 @@ def main():
         config,
         s3_client,
         # batch every 20k records
-        int(config.get("file_size", 20000))
+        int(config.get("file_size", 20 * 1000))
     )
 
     emit_state(state)
