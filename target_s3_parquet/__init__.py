@@ -71,7 +71,7 @@ def persist_messages(
 ):
     destination_path = "/tmp/"
     compression_method = config.get("compression_method")
-    compression_type = config.get("compression_type", "outer")
+    compression_type = config.get("compression_type", "inner")
     streams_in_separate_folder = False
 
     # Static information shared among processes
@@ -163,7 +163,7 @@ def persist_messages(
                     )
                 )
 
-        if current_stream_name:
+        if current_stream_name and current_stream_name in records:
             write_file(
                 current_stream_name,
                 records.pop(current_stream_name)
