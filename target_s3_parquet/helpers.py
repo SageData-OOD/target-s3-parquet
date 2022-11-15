@@ -1,10 +1,13 @@
+
+import numbers
+import os
+
 try:
     from collections.abc import MutableMapping
 except ImportError:
     from collections import MutableMapping  # deprecated in Python 3.3
 
 import singer
-import os
 
 LOGGER = singer.get_logger()
 LOGGER.setLevel(os.getenv("LOGGER_LEVEL", "INFO"))
@@ -39,7 +42,7 @@ def flatten(dictionary, parent_key="", sep="__"):
         if isinstance(v, MutableMapping):
             items.extend(flatten(v, new_key, sep=sep).items())
         else:
-            items.append((new_key, str(v) if type(v) is list else v))
+            items.append((new_key, str(v) if type(v) is list or isinstance(v, numbers.Number) else v))
     return dict(items)
 
 def flatten_schema(dictionary, parent_key="", sep="__"):
