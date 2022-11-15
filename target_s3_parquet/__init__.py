@@ -60,6 +60,7 @@ def emit_records_counter_metrics(record_counter, stream_name):
     metric = {"type": "counter", "metric": "record_count", "value": record_counter.get(stream_name),
               "tags": {"count_type": "table_rows_persisted", "table": stream_name}}
     LOGGER.info('\nINFO METRIC: %s', json.dumps(metric))
+    sys.stderr.flush()
 
 
 def persist_messages(
