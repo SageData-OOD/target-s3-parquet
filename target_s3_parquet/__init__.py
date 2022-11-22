@@ -81,9 +81,9 @@ def persist_messages(
     record_counter = dict()
 
     # TODO: add metadata columns?
-    key_properties = {}
-    now = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
+    # key_properties = {}
+    # now = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
+    # timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
 
     # The target is prepared to accept all the compression methods provided by the Pandas module,
     # with the mapping below,
@@ -102,7 +102,6 @@ def persist_messages(
 
     def process_messages(message_buffer: TextIOWrapper):
         state = None
-        current_stream_name = None
         records = {}
 
         for message in message_buffer:
@@ -124,15 +123,7 @@ def persist_messages(
                 record = message.get("record")
                 validators[message["stream"]].validate(record)
                 flattened_record = flatten(record)
-                # Once the record is flattened, it is added to the final record list, which will be stored in
-                # the parquet file.
-                if (stream_name != current_stream_name) and (current_stream_name != None):
-                    write_file(
-                        current_stream_name,
-                        records.pop(current_stream_name)
-                    )
-                    upload_files_to_s3()
-                current_stream_name = stream_name
+
                 if type(records.get(stream_name)) != list:
                     records[stream_name] = [flattened_record]
                 else:
@@ -140,8 +131,8 @@ def persist_messages(
                     if (file_size > 0) and \
                             (not len(records[stream_name]) % file_size):
                         write_file(
-                            current_stream_name,
-                            records.pop(current_stream_name)
+                            stream_name,
+                            records.pop(stream_name)
                         )
                         upload_files_to_s3()
                 state = None
@@ -163,10 +154,10 @@ def persist_messages(
                     )
                 )
 
-        if current_stream_name and current_stream_name in records:
+        for stream_name in records:
             write_file(
-                current_stream_name,
-                records.pop(current_stream_name)
+                stream_name,
+                records.get(stream_name)
             )
 
         LOGGER.info("Upload files to S3...")
@@ -232,9 +223,9 @@ def persist_messages(
         return filepath
 
     def upload_files_to_s3():
-        LOGGER.info(f"Writing {len(files_to_upload)} files")
+        LOGGER.info(f"Will upload {len(files_to_upload)} files to S3")
         compressed_file = None
-        for filename, target_key, stream_name in files_to_upload:
+        for filename, target_key, _ in files_to_upload:
             if compression_method and outer_extension:
                 compressed_file = utils.do_outer_compression(filename, compression_method)
 
