@@ -171,7 +171,6 @@ def persist_messages(
 
     def write_file(current_stream_name, record):
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
-        LOGGER.info(f"Writing files from {current_stream_name} stream")
         dataframe = create_dataframe(record)
         if streams_in_separate_folder and not os.path.exists(
                 os.path.join(destination_path, current_stream_name)
