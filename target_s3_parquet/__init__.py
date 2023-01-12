@@ -143,10 +143,9 @@ def persist_messages(
                 stream = message["stream"]
                 validators[stream] = Draft4Validator(message["schema"])
 
-                properties = message["schema"].get("properties")
-                if properties:
-                    schemas[stream] = flatten_schema(properties)
-                    LOGGER.info(f"Schema: {schemas[stream]}")
+                properties = message["schema"].get("properties", {})
+                schemas[stream] = flatten_schema(properties)
+                LOGGER.info(f"Schema: {schemas[stream]}")
             else:
                 LOGGER.debug(
                     "Unknown message type {} in message {}".format(
