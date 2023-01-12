@@ -11,7 +11,10 @@ import logging
 # from os import walk
 import glob
 import os
+import target_s3_parquet
 from target_s3_parquet import persist_messages
+
+target_s3_parquet.upload_files_to_s3 = dict
 
 #### TEMP DEBUG
 
@@ -61,7 +64,7 @@ def test_persist_messages(input_messages_1, expected_df_1):
         io.BytesIO(input_messages_1.encode()), encoding="utf-8"
     )
 
-    persist_messages(input_messages, f"test_{timestamp}")
+    persist_messages(input_messages, f"test_{timestamp}", None)
 
     filename = [f for f in glob.glob(f"test_{timestamp}/*.parquet")]
 
@@ -80,4 +83,4 @@ def test_persist_messages_invalid_sort(input_messages_1_reorder):
 
     with pytest.raises(ValueError,
                        match="A record for stream test was encountered before a corresponding schema"):
-        persist_messages(input_messages, "test_")
+        persist_messages(input_messages, "test_", None)

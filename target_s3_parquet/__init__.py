@@ -143,10 +143,10 @@ def persist_messages(
                 stream = message["stream"]
                 validators[stream] = Draft4Validator(message["schema"])
 
-                properties = message["schema"]["properties"]
-                schemas[stream] = flatten_schema(properties)
-                LOGGER.info(f"Schema: {schemas[stream]}")
-                # key_properties[stream] = message["key_properties"]
+                properties = message["schema"].get("properties")
+                if properties:
+                    schemas[stream] = flatten_schema(properties)
+                    LOGGER.info(f"Schema: {schemas[stream]}")
             else:
                 LOGGER.debug(
                     "Unknown message type {} in message {}".format(
@@ -197,14 +197,6 @@ def persist_messages(
 
         #keep current_stream_name
         files_to_upload.add((filepath, target_key, current_stream_name))
-
-        # if not file_writer.get(current_stream_name):
-        #     file_writer[current_stream_name] = ParquetWriter(filepath,
-        #                                                      dataframe.schema,
-        #                                                      compression=compression_method
-        #                                                      if compression_type == "inner" else None
-        #                                                      )
-        # file_writer[current_stream_name].write_batch(dataframe)
 
         with ParquetWriter(filepath,
                     dataframe.schema,
