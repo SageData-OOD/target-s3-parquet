@@ -22,12 +22,20 @@ from target_s3_parquet import utils
 _all__ = ["main"]
 
 LOGGER = singer.get_logger()
-# LOGGER.setLevel(logging.DEBUG)
 
-def create_dataframe(list_dict):
+def create_dataframe(list_dict, config):
     fields = set()
+    flatten_records = config.get("flatten_records", True)
+
     for d in list_dict:
         fields = fields.union(d.keys())
+        
+        if not flatten_records:
+            # convert dict objects to JSON strings
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    d[k] = json.dumps(v)
+
     dataframe = pa.table({f: [row.get(f) for row in list_dict] for f in sorted(fields)})
     return dataframe
 
@@ -100,9 +108,10 @@ def persist_messages(
         os.makedirs(destination_path)
     # End of Static information shared among processes
 
-    def process_messages(message_buffer: TextIOWrapper):
+    def process_messages(message_buffer: TextIOWrapper, config: dict) -> dict:
         state = None
         records = {}
+        flatten_records = config.get("flatten_records", True)
 
         for message in message_buffer:
             LOGGER.debug(f"target-parquet got message: {message}")
@@ -122,7 +131,7 @@ def persist_messages(
                 stream_name = message["stream"]
                 record = message.get("record")
                 validators[message["stream"]].validate(record)
-                flattened_record = flatten(record)
+                flattened_record = flatten(record) if flatten_records else record
 
                 if type(records.get(stream_name)) != list:
                     records[stream_name] = [flattened_record]
@@ -132,7 +141,8 @@ def persist_messages(
                             (not len(records[stream_name]) % file_size):
                         write_file(
                             stream_name,
-                            records.pop(stream_name)
+                            records.pop(stream_name),
+                            config
                         )
                         upload_files_to_s3()
                 state = None
@@ -144,7 +154,7 @@ def persist_messages(
                 validators[stream] = Draft4Validator(message["schema"])
 
                 properties = message["schema"].get("properties", {})
-                schemas[stream] = flatten_schema(properties)
+                schemas[stream] = flatten_schema(properties) if flatten_records else message["schema"]
                 LOGGER.info(f"Schema: {schemas[stream]}")
             else:
                 LOGGER.debug(
@@ -156,7 +166,8 @@ def persist_messages(
         for stream_name in records:
             write_file(
                 stream_name,
-                records.get(stream_name)
+                records.get(stream_name),
+                config
             )
 
         LOGGER.info("Upload files to S3...")
@@ -168,9 +179,9 @@ def persist_messages(
 
         return state
 
-    def write_file(current_stream_name, record):
+    def write_file(current_stream_name, record, config):
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S-%f")
-        dataframe = create_dataframe(record)
+        dataframe = create_dataframe(record, config)
         if streams_in_separate_folder and not os.path.exists(
                 os.path.join(destination_path, current_stream_name)
         ):
@@ -231,7 +242,7 @@ def persist_messages(
 
         files_to_upload.clear()
 
-    return process_messages(messages)
+    return process_messages(messages, config)
 
 def main():
     parser = argparse.ArgumentParser()
