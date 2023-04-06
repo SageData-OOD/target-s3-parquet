@@ -33,7 +33,7 @@ def create_dataframe(list_dict, config):
         if not flatten_records:
             # convert dict objects to JSON strings
             for k, v in d.items():
-                if isinstance(v, dict):
+                if isinstance(v, dict) or isinstance(v, list):
                     d[k] = json.dumps(v)
 
     dataframe = pa.table({f: [row.get(f) for row in list_dict] for f in sorted(fields)})
