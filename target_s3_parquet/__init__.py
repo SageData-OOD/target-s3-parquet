@@ -29,12 +29,12 @@ def create_dataframe(list_dict, config):
 
     for d in list_dict:
         fields = fields.union(d.keys())
-        
+
         if not flatten_records:
             # convert dict objects to JSON strings
             for k, v in d.items():
                 if isinstance(v, dict) or isinstance(v, list):
-                    d[k] = json.dumps(v)
+                    d[k] = json.dumps(v, default=str)
 
     dataframe = pa.table({f: [row.get(f) for row in list_dict] for f in sorted(fields)})
     return dataframe
@@ -171,7 +171,7 @@ def persist_messages(
             )
 
         LOGGER.info("Upload files to S3...")
-        
+
         upload_files_to_s3()
         # Emit record_count metrics
         for stream_name in record_counter:
