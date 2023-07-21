@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+from enum import Enum
+from typing import Optional
+
 import argparse
 from datetime import datetime
 from io import TextIOWrapper
@@ -13,7 +16,6 @@ import psutil
 import time
 import threading
 # import gc
-from enum import Enum
 
 from .helpers import flatten, flatten_schema
 from target_s3_parquet import s3
@@ -203,6 +205,7 @@ def persist_messages(
                                           timestamp=timestamp,
                                           compression_type=compression_type,
                                           compression_extension=compression_extension,
+                                          integration=config.get("tables_prefix", ""),
                                           naming_convention=config.get('naming_convention'))
 
         #keep current_stream_name

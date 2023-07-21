@@ -48,11 +48,18 @@ def get_extension_mapping(compression_method):
         logger.warning("unsupported compression method.")
         compression_extension = ""
         compression_method = None
+        
     return compression_method, compression_extension
 
 
-def get_target_key(stream, prefix=None, timestamp=None, compression_type=None, compression_extension="",
+def get_target_key(stream,
+                   prefix=None,
+                   timestamp=None,
+                   compression_type=None,
+                   compression_extension="",
+                   integration="",
                    naming_convention=None):
+    
     """Creates and returns an S3 key for the message"""
 
     if not naming_convention:
@@ -66,10 +73,12 @@ def get_target_key(stream, prefix=None, timestamp=None, compression_type=None, c
 
     if not timestamp:
         timestamp = datetime.now().strftime('%Y%m%dT%H%M%S')
+
     key = naming_convention
 
     # replace simple tokens
     for k, v in {
+        '{integration}': integration,
         '{stream}': stream,
         '{timestamp}': timestamp,
         '{extension}': compression_extension,
